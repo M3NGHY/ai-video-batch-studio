@@ -76,7 +76,7 @@ internal static class DolaSessionAccountExtensions
 
         await NavigateAndWaitAsync(session, DolaUrl, cancellationToken);
 
-        CoreWebView2NewWindowRequestedEventHandler? popupHandler = null;
+        EventHandler<CoreWebView2NewWindowRequestedEventArgs>? popupHandler = null;
         popupHandler = (_, e) =>
         {
             try
