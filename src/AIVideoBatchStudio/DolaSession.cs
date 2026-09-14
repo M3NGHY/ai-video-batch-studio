@@ -14,23 +14,69 @@ internal sealed class DolaSession : IDisposable
     private readonly Action<VideoJob> _jobChanged;
     private TaskCompletionSource<string>? _resultWaiter;
     private Guid? _activeJobId;
+    private CoreWebView2Environment? _environment;
 
+    public int Number { get; }
     public string Name { get; }
+    public string ProfileDir { get; }
+    public string ProxyUrl { get; }
+    public string? LastObservedIp { get; private set; }
     public WebView2 Browser { get; } = new() { Dock = DockStyle.Fill };
     public bool IsBusy { get; private set; }
     public bool IsReady => Browser.CoreWebView2 is not null;
 
-    public DolaSession(string name, string videoDir, Action<string> log, Action<VideoJob> jobChanged)
+    public DolaSession(
+        int number,
+        string name,
+        string profileDir,
+        string proxyUrl,
+        string videoDir,
+        Action<string> log,
+        Action<VideoJob> jobChanged)
     {
+        Number = number;
         Name = name;
+        ProfileDir = profileDir;
+        ProxyUrl = NormalizeProxyAddress(proxyUrl);
         _videoDir = videoDir;
         _log = log;
         _jobChanged = jobChanged;
     }
 
-    public async Task InitializeAsync(CoreWebView2Environment environment)
+    public static string NormalizeProxyAddress(string? value)
     {
-        await Browser.EnsureCoreWebView2Async(environment);
+        var text = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+        if (!text.Contains("://", StringComparison.Ordinal))
+            text = "http://" + text;
+
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri))
+            throw new InvalidOperationException("代理地址格式不正确。示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080");
+
+        var scheme = uri.Scheme.ToLowerInvariant();
+        if (scheme is not ("http" or "https" or "socks4" or "socks5"))
+            throw new InvalidOperationException("仅支持 http、https、socks4、socks5 固定代理。");
+
+        if (string.IsNullOrWhiteSpace(uri.Host) || uri.Port <= 0)
+            throw new InvalidOperationException("代理地址必须包含主机和端口。");
+
+        if (!string.IsNullOrWhiteSpace(uri.UserInfo))
+            throw new InvalidOperationException("当前版本不把代理账号密码写入浏览器命令行。请使用无认证固定代理，或使用本机代理客户端提供的本地端口。");
+
+        return $"{scheme}://{uri.Host}:{uri.Port}";
+    }
+
+    public async Task InitializeAsync()
+    {
+        Directory.CreateDirectory(ProfileDir);
+
+        var options = new CoreWebView2EnvironmentOptions();
+        if (!string.IsNullOrWhiteSpace(ProxyUrl))
+            options.AdditionalBrowserArguments = $"--proxy-server={ProxyUrl}";
+
+        _environment = await CoreWebView2Environment.CreateAsync(null, ProfileDir, options);
+        await Browser.EnsureCoreWebView2Async(_environment);
         Browser.CoreWebView2.Settings.AreDevToolsEnabled = true;
         Browser.CoreWebView2.Settings.IsStatusBarEnabled = false;
         Browser.CoreWebView2.WebMessageReceived += BrowserOnWebMessageReceived;
@@ -41,6 +87,17 @@ internal sealed class DolaSession : IDisposable
     public void NavigateHome()
     {
         Browser.CoreWebView2?.Navigate(DolaUrl);
+    }
+
+    public async Task<string> TestNetworkAsync(CancellationToken cancellationToken = default)
+    {
+        using var handler = CreateHttpHandler();
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AIVideoBatchStudio/1.0");
+        var result = (await client.GetStringAsync("https://api.ipify.org", cancellationToken)).Trim();
+        if (result.Length > 100) result = result[..100];
+        LastObservedIp = result;
+        return result;
     }
 
     public async Task RunJobAsync(VideoJob job, CancellationToken cancellationToken)
@@ -197,6 +254,23 @@ internal sealed class DolaSession : IDisposable
         }
     }
 
+    private HttpClientHandler CreateHttpHandler()
+    {
+        var handler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All,
+            AllowAutoRedirect = true
+        };
+
+        if (!string.IsNullOrWhiteSpace(ProxyUrl))
+        {
+            handler.Proxy = new WebProxy(new Uri(ProxyUrl));
+            handler.UseProxy = true;
+        }
+
+        return handler;
+    }
+
     private async Task<string> DownloadVideoAsync(string remoteUrl, Guid jobId, CancellationToken cancellationToken)
     {
         if (Browser.CoreWebView2 is null)
@@ -211,11 +285,7 @@ internal sealed class DolaSession : IDisposable
         }
 
         var target = Path.Combine(_videoDir, $"{DateTime.Now:yyyyMMdd_HHmmss}_{jobId:N}{extension}");
-        var handler = new HttpClientHandler
-        {
-            AutomaticDecompression = DecompressionMethods.All,
-            AllowAutoRedirect = true
-        };
+        using var handler = CreateHttpHandler();
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
 
         var cookies = await Browser.CoreWebView2.CookieManager.GetCookiesAsync(remoteUrl);
@@ -255,5 +325,6 @@ internal sealed class DolaSession : IDisposable
             // Ignore disposal-time WebView2 errors.
         }
         Browser.Dispose();
+        _environment = null;
     }
 }
