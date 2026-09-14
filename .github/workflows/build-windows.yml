@@ -1,0 +1,60 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Expand source
+        shell: pwsh
+        run: |
+          Expand-Archive -Path .\source.zip -DestinationPath .\workspace -Force
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore .\workspace\AIVideoBatchStudio.sln
+
+      - name: Publish Windows x64 self-contained
+        shell: pwsh
+        run: |
+          dotnet publish .\workspace\src\AIVideoBatchStudio\AIVideoBatchStudio.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:PublishTrimmed=false `
+            -o .\release
+          if (-not (Test-Path .\release\AIVideoBatchStudio.exe)) {
+            throw 'AIVideoBatchStudio.exe was not produced.'
+          }
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIVideoBatchStudio-EXE
+          path: .\release\AIVideoBatchStudio.exe
+          if-no-files-found: error
+
+      - name: Upload portable folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIVideoBatchStudio-Portable
+          path: .\release\
+          if-no-files-found: error
