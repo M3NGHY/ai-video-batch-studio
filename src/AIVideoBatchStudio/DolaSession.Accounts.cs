@@ -16,115 +16,112 @@ internal static class DolaSessionAccountExtensions
             throw new InvalidOperationException($"{session.Name} 尚未初始化。");
 
         var core = session.Browser.CoreWebView2;
-        await NavigateAndWaitAsync(session, "https://accounts.google.com/signin/v2/identifier?hl=zh-CN", cancellationToken);
-
-        if (!await WaitForSelectorAsync(session, "input[type='email']", TimeSpan.FromSeconds(30), cancellationToken))
-            return "未找到 Google 邮箱输入框，可能需要手动确认登录页面。";
-
-        var emailJson = JsonSerializer.Serialize(account.Email);
-        var emailResult = await core.ExecuteScriptAsync($$"""
-            (() => {
-              const input = document.querySelector("input[type='email']");
-              if (!input) return false;
-              const value = {{emailJson}};
-              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-              if (setter) setter.call(input, value); else input.value = value;
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-              const next = document.querySelector('#identifierNext') ||
-                [...document.querySelectorAll('button')].find(b => /下一步|next/i.test((b.innerText || '').trim()));
-              if (next) next.click();
-              return true;
-            })();
-            """);
-        if (!emailResult.Contains("true", StringComparison.OrdinalIgnoreCase))
-            return "Google 邮箱填写失败。";
-
-        if (!await WaitForSelectorAsync(session, "input[type='password']", TimeSpan.FromSeconds(35), cancellationToken))
-        {
-            var url = core.Source ?? string.Empty;
-            if (url.Contains("challenge", StringComparison.OrdinalIgnoreCase))
-                return "Google 要求验证码/二次验证，请在该 Dola 窗口中手动完成；软件不会绕过验证。";
-            return "未出现 Google 密码输入框，可能需要验证码或额外确认。";
-        }
-
-        var passwordJson = JsonSerializer.Serialize(account.Password);
-        var passwordResult = await core.ExecuteScriptAsync($$"""
-            (() => {
-              const input = document.querySelector("input[type='password']");
-              if (!input) return false;
-              const value = {{passwordJson}};
-              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-              if (setter) setter.call(input, value); else input.value = value;
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-              const next = document.querySelector('#passwordNext') ||
-                [...document.querySelectorAll('button')].find(b => /下一步|next/i.test((b.innerText || '').trim()));
-              if (next) next.click();
-              return true;
-            })();
-            """);
-        if (!passwordResult.Contains("true", StringComparison.OrdinalIgnoreCase))
-            return "Google 密码填写失败。";
-
-        await Task.Delay(2500, cancellationToken);
-        var state = await WaitForGoogleLoginResultAsync(session, cancellationToken);
-        if (state == GoogleLoginState.NeedsVerification)
-            return "Google 要求验证码/二次验证，请在该窗口手动完成；完成后可继续使用当前 Profile。";
-        if (state == GoogleLoginState.Timeout)
-            return "Google 登录状态未能自动确认，请检查该窗口页面。";
-
-        await NavigateAndWaitAsync(session, DolaUrl, cancellationToken);
-
         EventHandler<CoreWebView2NewWindowRequestedEventArgs>? popupHandler = null;
         popupHandler = (_, e) =>
         {
             try
             {
                 if (string.IsNullOrWhiteSpace(e.Uri)) return;
-                if (!e.Uri.Contains("google", StringComparison.OrdinalIgnoreCase) &&
-                    !e.Uri.Contains("dola.com", StringComparison.OrdinalIgnoreCase)) return;
                 e.Handled = true;
                 core.Navigate(e.Uri);
             }
-            catch { }
+            catch
+            {
+                // Ignore popup handoff errors. The caller will time out and report the page state.
+            }
         };
         core.NewWindowRequested += popupHandler;
 
         try
         {
-            var clickGoogle = await core.ExecuteScriptAsync("""
-                (() => {
-                  const all = [...document.querySelectorAll('button,a,[role="button"]')];
-                  const target = all.find(x => /google/i.test((x.innerText || x.textContent || x.getAttribute('aria-label') || '').trim()));
-                  if (!target) return false;
-                  target.click();
-                  return true;
-                })();
-                """);
+            // Critical: always start from Dola. We do not navigate to a generic Google sign-in page,
+            // because that can end at the Google account/profile page instead of returning to Dola OAuth.
+            await NavigateAndWaitAsync(session, DolaUrl, cancellationToken);
 
-            if (!clickGoogle.Contains("true", StringComparison.OrdinalIgnoreCase))
-                return "Google 账号已登录到独立 Profile；Dola 页面没有检测到 Google 登录按钮。";
+            var launched = await LaunchGoogleOAuthFromDolaAsync(session, cancellationToken);
+            if (!launched)
+                return "未在 Dola 页面找到 Google 登录入口，请确认当前窗口处于 Dola 登录页面。";
 
-            await Task.Delay(1800, cancellationToken);
-            if ((core.Source ?? string.Empty).Contains("accounts.google.com", StringComparison.OrdinalIgnoreCase))
+            var emailJson = JsonSerializer.Serialize(account.Email);
+            var passwordJson = JsonSerializer.Serialize(account.Password);
+            var sawGoogle = false;
+            var emailSubmitted = false;
+            var passwordSubmitted = false;
+            var deadline = DateTime.UtcNow.AddMinutes(2);
+
+            while (DateTime.UtcNow < deadline)
             {
-                var accountJson = JsonSerializer.Serialize(account.Email);
-                await core.ExecuteScriptAsync($$"""
-                    (() => {
-                      const email = {{accountJson}};
-                      const exact = document.querySelector(`[data-identifier="${email}"]`);
-                      if (exact) { exact.click(); return true; }
-                      const nodes = [...document.querySelectorAll('[role="link"],[role="button"],div')];
-                      const match = nodes.find(x => (x.innerText || '').trim() === email);
-                      if (match) { match.click(); return true; }
-                      return false;
-                    })();
-                    """);
+                cancellationToken.ThrowIfCancellationRequested();
+                var source = core.Source ?? string.Empty;
+
+                if (IsDolaUrl(source) && sawGoogle)
+                {
+                    await Task.Delay(1200, cancellationToken);
+                    return "DOLA_LOGIN_OK";
+                }
+
+                if (IsGoogleUrl(source))
+                {
+                    sawGoogle = true;
+
+                    if (await IsGoogleChallengeAsync(core))
+                        return "Google 要求验证码/二次验证，请在该 Dola 窗口中手动完成；完成后页面会回到 Dola。";
+
+                    // Account chooser: use the exact imported account when already present in this Profile.
+                    if (await TryChooseExistingGoogleAccountAsync(core, emailJson))
+                    {
+                        await Task.Delay(900, cancellationToken);
+                        continue;
+                    }
+
+                    // If another Google account is cached, choose "Use another account" before filling email.
+                    if (!emailSubmitted && await TryClickUseAnotherAccountAsync(core))
+                    {
+                        await Task.Delay(700, cancellationToken);
+                        continue;
+                    }
+
+                    if (!emailSubmitted && await HasSelectorAsync(core, "input[type='email']"))
+                    {
+                        var ok = await FillGoogleEmailAsync(core, emailJson);
+                        if (!ok) return "Google 邮箱填写失败。";
+                        emailSubmitted = true;
+                        await Task.Delay(1000, cancellationToken);
+                        continue;
+                    }
+
+                    if (!passwordSubmitted && await HasSelectorAsync(core, "input[type='password']"))
+                    {
+                        var ok = await FillGooglePasswordAsync(core, passwordJson);
+                        if (!ok) return "Google 密码填写失败。";
+                        passwordSubmitted = true;
+                        await Task.Delay(1200, cancellationToken);
+                        continue;
+                    }
+
+                    // Standard Google OAuth consent/continue screens. This only continues the Dola login
+                    // the user explicitly requested; it does not attempt to bypass verification challenges.
+                    if (await TryClickGoogleConsentAsync(core))
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                        continue;
+                    }
+                }
+                else if (!sawGoogle && IsDolaUrl(source))
+                {
+                    // Some Dola builds open a login modal asynchronously; try the Google entry again.
+                    await TryClickGoogleEntryAsync(core);
+                }
+
+                await Task.Delay(500, cancellationToken);
             }
 
-            await Task.Delay(2500, cancellationToken);
-            return "Google 登录已提交，并已触发 Dola 的 Google 登录流程。";
+            var finalUrl = core.Source ?? string.Empty;
+            if (IsDolaUrl(finalUrl))
+                return "DOLA_LOGIN_OK";
+            if (IsGoogleUrl(finalUrl))
+                return "Google 登录尚未完成，请检查该窗口是否需要验证码、账号确认或授权确认。";
+            return $"Google 登录超时，当前页面：{finalUrl}";
         }
         finally
         {
@@ -142,6 +139,8 @@ internal static class DolaSessionAccountExtensions
         if (cookies.Count == 0) return 0;
 
         var manager = session.Browser.CoreWebView2.CookieManager;
+
+        // Clear only Dola cookies from this isolated Profile before importing the selected account.
         foreach (var url in new[] { "https://www.dola.com/", "https://dola.com/" })
         {
             var existing = await manager.GetCookiesAsync(url);
@@ -154,9 +153,11 @@ internal static class DolaSessionAccountExtensions
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(source.Name)) continue;
 
-            var domain = string.IsNullOrWhiteSpace(source.Domain) ? ".dola.com" : source.Domain.Trim();
-            var path = string.IsNullOrWhiteSpace(source.Path) ? "/" : source.Path;
-            var cookie = manager.CreateCookie(source.Name, source.Value ?? string.Empty, domain, path);
+            var domain = NormalizeDolaCookieDomain(source.Domain);
+            if (domain is null) continue;
+
+            var path = string.IsNullOrWhiteSpace(source.Path) ? "/" : source.Path.Trim();
+            var cookie = manager.CreateCookie(source.Name.Trim(), source.Value ?? string.Empty, domain, path);
             cookie.IsSecure = source.Secure || domain.Contains("dola.com", StringComparison.OrdinalIgnoreCase);
             cookie.IsHttpOnly = source.HttpOnly;
             if (source.Expires is { } expires && expires > DateTime.UtcNow)
@@ -165,9 +166,231 @@ internal static class DolaSessionAccountExtensions
             imported++;
         }
 
+        if (imported == 0)
+            throw new InvalidOperationException("Cookie 文件中没有可用于 dola.com 的 Cookie。 ");
+
         await NavigateAndWaitAsync(session, DolaUrl, cancellationToken);
+        await Task.Delay(800, cancellationToken);
         return imported;
     }
+
+    private static async Task<bool> LaunchGoogleOAuthFromDolaAsync(
+        DolaSession session,
+        CancellationToken cancellationToken)
+    {
+        var core = session.Browser.CoreWebView2 ?? throw new InvalidOperationException("浏览器未初始化。");
+
+        // First try a Google entry that is already visible (login modal/page).
+        if (await TryClickGoogleEntryAsync(core))
+        {
+            await Task.Delay(1000, cancellationToken);
+            return true;
+        }
+
+        // Otherwise click Dola's login/sign-in entry, wait for its dialog, then click Google.
+        var loginClicked = await core.ExecuteScriptAsync("""
+            (() => {
+              const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+              };
+              const textOf = el => (el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+              const nodes = [...document.querySelectorAll('button,a,[role="button"]')].filter(visible);
+              const target = nodes.find(el => /^(登录|登入|log\s*in|login|sign\s*in)$/i.test(textOf(el))) ||
+                             nodes.find(el => /(登录|登入|log\s*in|sign\s*in)/i.test(textOf(el)));
+              if (!target) return false;
+              target.click();
+              return true;
+            })();
+            """);
+
+        if (!loginClicked.Contains("true", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var until = DateTime.UtcNow.AddSeconds(12);
+        while (DateTime.UtcNow < until)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsGoogleUrl(core.Source ?? string.Empty)) return true;
+            if (await TryClickGoogleEntryAsync(core))
+            {
+                await Task.Delay(900, cancellationToken);
+                return true;
+            }
+            await Task.Delay(350, cancellationToken);
+        }
+
+        return IsGoogleUrl(core.Source ?? string.Empty);
+    }
+
+    private static async Task<bool> TryClickGoogleEntryAsync(CoreWebView2 core)
+    {
+        var result = await core.ExecuteScriptAsync("""
+            (() => {
+              const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+              };
+              const textOf = el => (el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+              const nodes = [...document.querySelectorAll('button,a,[role="button"]')].filter(visible);
+              let target = nodes.find(el => /google/i.test(textOf(el)));
+              if (!target) {
+                const img = [...document.querySelectorAll('img[alt],svg')].find(el => /google/i.test(el.getAttribute('alt') || el.getAttribute('aria-label') || ''));
+                target = img?.closest('button,a,[role="button"]') || null;
+              }
+              if (!target) return false;
+              target.click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> TryChooseExistingGoogleAccountAsync(CoreWebView2 core, string emailJson)
+    {
+        var result = await core.ExecuteScriptAsync($$"""
+            (() => {
+              const email = {{emailJson}};
+              const exact = document.querySelector(`[data-identifier="${CSS.escape(email)}"]`);
+              if (exact) { (exact.closest('[role="link"],[role="button"],button') || exact).click(); return true; }
+              const nodes = [...document.querySelectorAll('[data-email],[role="link"],[role="button"],li,div')];
+              const match = nodes.find(x => {
+                const v = x.getAttribute('data-email') || x.getAttribute('data-identifier') || (x.innerText || '').trim();
+                return v === email || v.includes(email);
+              });
+              if (!match) return false;
+              (match.closest('[role="link"],[role="button"],button') || match).click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> TryClickUseAnotherAccountAsync(CoreWebView2 core)
+    {
+        var result = await core.ExecuteScriptAsync("""
+            (() => {
+              const nodes = [...document.querySelectorAll('button,[role="button"],[role="link"],div')];
+              const target = nodes.find(x => /use another account|使用其他账号|使用其他帐号|换一个账号|another account/i.test((x.innerText || x.textContent || '').trim()));
+              if (!target) return false;
+              (target.closest('button,[role="button"],[role="link"]') || target).click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> FillGoogleEmailAsync(CoreWebView2 core, string emailJson)
+    {
+        var result = await core.ExecuteScriptAsync($$"""
+            (() => {
+              const input = document.querySelector("input[type='email']");
+              if (!input) return false;
+              const value = {{emailJson}};
+              input.focus();
+              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+              if (setter) setter.call(input, value); else input.value = value;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              const next = document.querySelector('#identifierNext') ||
+                [...document.querySelectorAll('button,[role="button"]')].find(b => /下一步|next/i.test((b.innerText || b.textContent || '').trim()));
+              if (next) next.click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> FillGooglePasswordAsync(CoreWebView2 core, string passwordJson)
+    {
+        var result = await core.ExecuteScriptAsync($$"""
+            (() => {
+              const input = document.querySelector("input[type='password']");
+              if (!input) return false;
+              const value = {{passwordJson}};
+              input.focus();
+              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+              if (setter) setter.call(input, value); else input.value = value;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              const next = document.querySelector('#passwordNext') ||
+                [...document.querySelectorAll('button,[role="button"]')].find(b => /下一步|next/i.test((b.innerText || b.textContent || '').trim()));
+              if (next) next.click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> TryClickGoogleConsentAsync(CoreWebView2 core)
+    {
+        var result = await core.ExecuteScriptAsync("""
+            (() => {
+              const visible = el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+              };
+              const nodes = [...document.querySelectorAll('button,[role="button"]')].filter(visible);
+              const target = nodes.find(x => /^(continue|继续|allow|允许|confirm|确认)$/i.test((x.innerText || x.textContent || '').trim()));
+              if (!target) return false;
+              target.click();
+              return true;
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> IsGoogleChallengeAsync(CoreWebView2 core)
+    {
+        var source = core.Source ?? string.Empty;
+        if (source.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+            source.Contains("speedbump", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var result = await core.ExecuteScriptAsync("""
+            (() => {
+              const text = (document.body?.innerText || '').slice(0, 10000);
+              return /2-Step Verification|两步验证|两步驗證|验证您的身份|Verify it.?s you|Confirm it.?s you|验证码|security key/i.test(text);
+            })();
+            """);
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> HasSelectorAsync(CoreWebView2 core, string selector)
+    {
+        var selectorJson = JsonSerializer.Serialize(selector);
+        var result = await core.ExecuteScriptAsync($"Boolean(document.querySelector({selectorJson}))");
+        return result.Contains("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? NormalizeDolaCookieDomain(string? raw)
+    {
+        var domain = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(domain)) return ".dola.com";
+        if (domain.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            domain.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Uri.TryCreate(domain, UriKind.Absolute, out var uri)) return null;
+            domain = uri.Host;
+        }
+        domain = domain.TrimStart('.');
+        if (!domain.Equals("dola.com", StringComparison.OrdinalIgnoreCase) &&
+            !domain.EndsWith(".dola.com", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return "." + domain;
+    }
+
+    private static bool IsGoogleUrl(string value) =>
+        value.Contains("accounts.google.com", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("google.com/o/oauth", StringComparison.OrdinalIgnoreCase) ||
+        value.Contains("googleusercontent.com", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDolaUrl(string value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Host.Equals("dola.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.EndsWith(".dola.com", StringComparison.OrdinalIgnoreCase));
 
     private static async Task NavigateAndWaitAsync(DolaSession session, string url, CancellationToken cancellationToken)
     {
@@ -179,7 +402,7 @@ internal static class DolaSessionAccountExtensions
         {
             core.Navigate(url);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(35));
+            timeout.CancelAfter(TimeSpan.FromSeconds(40));
             using var registration = timeout.Token.Register(() => tcs.TrySetCanceled(timeout.Token));
             await tcs.Task;
         }
@@ -187,56 +410,5 @@ internal static class DolaSessionAccountExtensions
         {
             core.NavigationCompleted -= Handler;
         }
-    }
-
-    private static async Task<bool> WaitForSelectorAsync(
-        DolaSession session,
-        string selector,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
-    {
-        var core = session.Browser.CoreWebView2 ?? throw new InvalidOperationException("浏览器未初始化。");
-        var selectorJson = JsonSerializer.Serialize(selector);
-        var until = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < until)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var result = await core.ExecuteScriptAsync($"Boolean(document.querySelector({selectorJson}))");
-            if (result.Contains("true", StringComparison.OrdinalIgnoreCase)) return true;
-            await Task.Delay(500, cancellationToken);
-        }
-        return false;
-    }
-
-    private static async Task<GoogleLoginState> WaitForGoogleLoginResultAsync(
-        DolaSession session,
-        CancellationToken cancellationToken)
-    {
-        var core = session.Browser.CoreWebView2 ?? throw new InvalidOperationException("浏览器未初始化。");
-        var until = DateTime.UtcNow.AddSeconds(35);
-        while (DateTime.UtcNow < until)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var url = core.Source ?? string.Empty;
-            if (url.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
-                url.Contains("signin/v2/challenge", StringComparison.OrdinalIgnoreCase))
-                return GoogleLoginState.NeedsVerification;
-
-            var hasPassword = await core.ExecuteScriptAsync("Boolean(document.querySelector(\"input[type='password']\"))");
-            if (!hasPassword.Contains("true", StringComparison.OrdinalIgnoreCase) &&
-                !url.Contains("signin/v2/identifier", StringComparison.OrdinalIgnoreCase) &&
-                !url.Contains("signin/v2/challenge", StringComparison.OrdinalIgnoreCase))
-                return GoogleLoginState.SignedIn;
-
-            await Task.Delay(750, cancellationToken);
-        }
-        return GoogleLoginState.Timeout;
-    }
-
-    private enum GoogleLoginState
-    {
-        SignedIn,
-        NeedsVerification,
-        Timeout
     }
 }
