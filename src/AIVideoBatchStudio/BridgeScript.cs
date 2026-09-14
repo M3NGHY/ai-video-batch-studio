@@ -2,7 +2,7 @@ namespace AIVideoBatchStudio;
 
 internal sealed partial class MainForm
 {
-    private const string BridgeScript = """
+    internal const string BridgeScript = """
         (() => {
           if (window.AIStudioBridge && window.AIStudioBridge.version === '1.0') return;
           const state = { taskId: null, seen: new Set(), timer: null, observer: null };
