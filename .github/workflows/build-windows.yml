@@ -23,7 +23,14 @@ jobs:
       - name: Expand source
         shell: pwsh
         run: |
-          Expand-Archive -Path .\source.zip -DestinationPath .\workspace -Force
+          New-Item -ItemType Directory -Path .\workspace -Force | Out-Null
+          & 7z x .\source.zip -o.\workspace -y
+          if ($LASTEXITCODE -ne 0) {
+            throw "7z extraction failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path .\workspace\AIVideoBatchStudio.sln)) {
+            throw 'AIVideoBatchStudio.sln not found after extraction.'
+          }
 
       - name: Restore
         shell: pwsh
@@ -41,6 +48,9 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -p:PublishTrimmed=false `
             -o .\release
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet publish failed with exit code $LASTEXITCODE"
+          }
           if (-not (Test-Path .\release\AIVideoBatchStudio.exe)) {
             throw 'AIVideoBatchStudio.exe was not produced.'
           }
