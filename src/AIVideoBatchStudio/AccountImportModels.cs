@@ -30,10 +30,10 @@ internal static class AccountImportParser
                 (line.Contains(',') || line.Contains('|') || line.Contains('\t'))) continue;
 
             var parts = SplitAccountLine(line);
-            if (parts.Count < 2) continue;
+            if (parts.Items.Count < 2) continue;
 
-            var email = Unquote(parts[0]).Trim();
-            var password = Unquote(string.Join(parts.Separator, parts.Skip(1))).Trim();
+            var email = Unquote(parts.Items[0]).Trim();
+            var password = Unquote(string.Join(parts.Separator, parts.Items.Skip(1))).Trim();
             if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password)) continue;
             if (!email.Contains('@')) continue;
 
