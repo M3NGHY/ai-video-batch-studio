@@ -12,7 +12,7 @@ internal sealed partial class MainForm
 
         using var dialog = new OpenFileDialog
         {
-            Title = "批量导入谷歌账号",
+            Title = "批量导入 Google 账号",
             Filter = "账号文件 (*.txt;*.csv)|*.txt;*.csv|所有文件 (*.*)|*.*",
             Multiselect = false
         };
@@ -35,8 +35,7 @@ internal sealed partial class MainForm
             return;
         }
 
-        var targetCount = Math.Max(_sessions.Count, accounts.Count);
-        targetCount = Math.Min(targetCount, (int)_windowCount.Maximum);
+        var targetCount = Math.Min(Math.Max(_sessions.Count, accounts.Count), (int)_windowCount.Maximum);
         if (_sessions.Count < targetCount)
         {
             _windowCount.Value = targetCount;
@@ -47,6 +46,8 @@ internal sealed partial class MainForm
         _runCts = new CancellationTokenSource();
         var success = 0;
         var manual = 0;
+        var failed = 0;
+
         try
         {
             for (var i = 0; i < accounts.Count && i < _sessions.Count; i++)
@@ -56,24 +57,31 @@ internal sealed partial class MainForm
                 var session = _sessions[i];
                 _browserTabs.SelectedIndex = i;
                 UpdateSessionCaption(session, $"Google {MaskEmail(account.Email)}");
-                _status.Text = $"正在登录 {session.Name}: {MaskEmail(account.Email)}";
-                Log($"{session.Name} 开始导入 Google 账号 {MaskEmail(account.Email)}");
+                _status.Text = $"正在通过 Dola Google 登录 {session.Name}: {MaskEmail(account.Email)} ({i + 1}/{Math.Min(accounts.Count, _sessions.Count)})";
+                Log($"{session.Name} 从 Dola 登录页发起 Google OAuth：{MaskEmail(account.Email)}");
 
                 try
                 {
                     var result = await session.LoginGoogleAccountAsync(account, _runCts.Token);
                     Log($"{session.Name} Google 登录结果: {result}");
-                    if (result.Contains("验证码", StringComparison.OrdinalIgnoreCase) ||
-                        result.Contains("手动", StringComparison.OrdinalIgnoreCase) ||
-                        result.Contains("确认", StringComparison.OrdinalIgnoreCase))
+
+                    if (string.Equals(result, "DOLA_LOGIN_OK", StringComparison.Ordinal))
+                    {
+                        success++;
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 已登录");
+                    }
+                    else if (result.Contains("验证码", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("二次验证", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("手动", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("确认", StringComparison.OrdinalIgnoreCase))
                     {
                         manual++;
-                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} - 待验证");
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待验证");
                     }
                     else
                     {
-                        success++;
-                        UpdateSessionCaption(session, MaskEmail(account.Email));
+                        failed++;
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 登录失败");
                     }
                 }
                 catch (OperationCanceledException)
@@ -82,17 +90,18 @@ internal sealed partial class MainForm
                 }
                 catch (Exception ex)
                 {
+                    failed++;
                     Log($"{session.Name} Google 登录失败: {ex.Message}");
-                    UpdateSessionCaption(session, $"{MaskEmail(account.Email)} - 失败");
+                    UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 登录失败");
                 }
             }
 
-            _status.Text = $"Google 批量导入完成：自动提交 {success}，需要手动验证 {manual}。";
+            _status.Text = $"Google 批量导入完成：Dola登录 {success}，待人工验证 {manual}，失败 {failed}。";
             MessageBox.Show(
-                $"已处理 {Math.Min(accounts.Count, _sessions.Count)} 个 Google 账号。\n自动提交：{success}\n需要手动验证码/二次验证：{manual}\n\n密码仅在本次运行内存中使用，不会明文保存。",
-                "批量导入完成",
+                $"已处理 {Math.Min(accounts.Count, _sessions.Count)} 个 Google 账号。\n\n已回到 Dola 并登录：{success}\n需要验证码/二次验证：{manual}\n失败：{failed}\n\nGoogle 登录现在从 Dola 的 Google OAuth 入口发起，不会先跳到 Google 个人资料页。密码只在本次程序运行内存中使用。",
+                "Google 批量导入完成",
                 MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+                failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
         catch (OperationCanceledException)
         {
@@ -143,8 +152,7 @@ internal sealed partial class MainForm
             return;
         }
 
-        var targetCount = Math.Max(_sessions.Count, bundles.Count);
-        targetCount = Math.Min(targetCount, (int)_windowCount.Maximum);
+        var targetCount = Math.Min(Math.Max(_sessions.Count, bundles.Count), (int)_windowCount.Maximum);
         if (_sessions.Count < targetCount)
         {
             _windowCount.Value = targetCount;
@@ -155,6 +163,7 @@ internal sealed partial class MainForm
         _runCts = new CancellationTokenSource();
         var success = 0;
         var failed = 0;
+
         try
         {
             for (var i = 0; i < bundles.Count && i < _sessions.Count; i++)
@@ -163,15 +172,15 @@ internal sealed partial class MainForm
                 var bundle = bundles[i];
                 var session = _sessions[i];
                 _browserTabs.SelectedIndex = i;
-                _status.Text = $"正在导入 {session.Name} Cookie ({i + 1}/{bundles.Count})";
-                Log($"{session.Name} 开始导入 Cookie：{bundle.Label}，共 {bundle.Cookies.Count} 项");
+                _status.Text = $"正在导入 {session.Name} Dola Cookie ({i + 1}/{Math.Min(bundles.Count, _sessions.Count)})";
+                Log($"{session.Name} 开始导入 Dola Cookie：{bundle.Label}，共 {bundle.Cookies.Count} 项");
 
                 try
                 {
                     var count = await session.ImportDolaCookiesAsync(bundle.Cookies, _runCts.Token);
                     success++;
-                    UpdateSessionCaption(session, $"Cookie已登录 {i + 1}");
-                    Log($"{session.Name} Cookie 导入完成，共写入 {count} 项，已刷新 Dola。 ");
+                    UpdateSessionCaption(session, $"Cookie 已载入 {i + 1}");
+                    Log($"{session.Name} Cookie 导入完成，共写入 {count} 项 dola.com Cookie，已刷新 Dola。 ");
                 }
                 catch (OperationCanceledException)
                 {
@@ -187,7 +196,7 @@ internal sealed partial class MainForm
 
             _status.Text = $"Dola Cookie 批量导入完成：成功 {success}，失败 {failed}。";
             MessageBox.Show(
-                $"Dola Cookie 已处理 {Math.Min(bundles.Count, _sessions.Count)} 个独立 Profile。\n成功：{success}\n失败：{failed}\n\n成功导入后对应窗口会自动刷新 Dola 页面。",
+                $"Dola Cookie 已处理 {Math.Min(bundles.Count, _sessions.Count)} 个独立 Profile。\n成功：{success}\n失败：{failed}\n\n每组 Cookie 只写入对应的独立 Profile，导入后自动返回 Dola 页面。",
                 "Cookie 批量导入完成",
                 MessageBoxButtons.OK,
                 failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
