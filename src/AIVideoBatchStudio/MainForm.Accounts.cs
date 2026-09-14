@@ -18,10 +18,10 @@ internal sealed partial class MainForm
         };
         if (dialog.ShowDialog() != DialogResult.OK) return;
 
-        List<GoogleAccount> accounts;
+        GoogleAccountImportResult import;
         try
         {
-            accounts = AccountImportParser.ParseGoogleAccounts(dialog.FileName);
+            import = GoogleAccountTextImporter.Parse(dialog.FileName, (int)_windowCount.Maximum);
         }
         catch (Exception ex)
         {
@@ -29,11 +29,26 @@ internal sealed partial class MainForm
             return;
         }
 
+        var accounts = import.Accounts.ToList();
+        Log($"Google TXT 解析：非空行 {import.TotalNonEmptyLines}，识别账号 {accounts.Count}，未识别 {import.RejectedLines}。 ");
+
         if (accounts.Count == 0)
         {
-            MessageBox.Show("没有读取到有效账号。格式示例：email@gmail.com,password", "未找到账号");
+            MessageBox.Show(
+                "没有读取到有效账号。\n\n当前优先支持格式：\nxxxx@gmail.com----password\n\n请确认邮箱和密码在同一行，中间是 4 个或更多横线。",
+                "未找到账号",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
             return;
         }
+
+        var preview = string.Join(Environment.NewLine, accounts.Take(8).Select((x, i) => $"{i + 1}. {MaskEmail(x.Email)}"));
+        var confirm = MessageBox.Show(
+            $"已识别 {accounts.Count} 个 Google 账号。\n未识别行：{import.RejectedLines}\n\n{preview}\n\n接下来每个账号会分配到独立 Dola Profile。软件会从 Dola 发起 Google OAuth，并自动填写邮箱；Google 密码/验证码请在弹出的 Google 登录窗口中完成一次。登录成功后该 Profile 会保留登录状态。\n\n是否开始？",
+            "确认 Google 账号导入",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information);
+        if (confirm != DialogResult.OK) return;
 
         var targetCount = Math.Min(Math.Max(_sessions.Count, accounts.Count), (int)_windowCount.Maximum);
         if (_sessions.Count < targetCount)
@@ -57,26 +72,29 @@ internal sealed partial class MainForm
                 var session = _sessions[i];
                 _browserTabs.SelectedIndex = i;
                 UpdateSessionCaption(session, $"Google {MaskEmail(account.Email)}");
-                _status.Text = $"正在通过 Dola Google 登录 {session.Name}: {MaskEmail(account.Email)} ({i + 1}/{Math.Min(accounts.Count, _sessions.Count)})";
-                Log($"{session.Name} 从 Dola 登录页发起 Google OAuth：{MaskEmail(account.Email)}");
+                _status.Text = $"正在通过 Dola Google OAuth 登录 {session.Name}: {MaskEmail(account.Email)} ({i + 1}/{Math.Min(accounts.Count, _sessions.Count)})";
+                Log($"{session.Name} 开始处理 Google 账号 {MaskEmail(account.Email)}");
 
                 try
                 {
-                    var result = await session.LoginGoogleAccountAsync(account, _runCts.Token);
-                    Log($"{session.Name} Google 登录结果: {result}");
+                    var result = await session.OpenGoogleOAuthForAccountAsync(
+                        account.Email,
+                        _runCts.Token,
+                        message => Log($"{session.Name} {message}"));
+                    Log($"{session.Name} Google OAuth 结果: {result}");
 
                     if (string.Equals(result, "DOLA_LOGIN_OK", StringComparison.Ordinal))
                     {
                         success++;
                         UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 已登录");
                     }
-                    else if (result.Contains("验证码", StringComparison.OrdinalIgnoreCase) ||
-                             result.Contains("二次验证", StringComparison.OrdinalIgnoreCase) ||
+                    else if (result.Contains("验证", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("密码", StringComparison.OrdinalIgnoreCase) ||
                              result.Contains("手动", StringComparison.OrdinalIgnoreCase) ||
-                             result.Contains("确认", StringComparison.OrdinalIgnoreCase))
+                             result.Contains("超时", StringComparison.OrdinalIgnoreCase))
                     {
                         manual++;
-                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待验证");
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待完成");
                     }
                     else
                     {
@@ -96,10 +114,10 @@ internal sealed partial class MainForm
                 }
             }
 
-            _status.Text = $"Google 批量导入完成：Dola登录 {success}，待人工验证 {manual}，失败 {failed}。";
+            _status.Text = $"Google 账号导入完成：Dola登录 {success}，待完成 {manual}，失败 {failed}。";
             MessageBox.Show(
-                $"已处理 {Math.Min(accounts.Count, _sessions.Count)} 个 Google 账号。\n\n已回到 Dola 并登录：{success}\n需要验证码/二次验证：{manual}\n失败：{failed}\n\nGoogle 登录现在从 Dola 的 Google OAuth 入口发起，不会先跳到 Google 个人资料页。密码只在本次程序运行内存中使用。",
-                "Google 批量导入完成",
+                $"已处理 {Math.Min(accounts.Count, _sessions.Count)} 个 Google 账号。\n\n已回到 Dola 并登录：{success}\n需要继续完成 Google 密码/验证：{manual}\n失败：{failed}\n\n账号 TXT 已按“邮箱----密码”格式识别。Dola 主页面不会再被带到 Google 个人资料页。",
+                "Google 账号导入完成",
                 MessageBoxButtons.OK,
                 failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
