@@ -24,6 +24,7 @@ internal sealed class VideoJob
 {
     public Guid Id { get; } = Guid.NewGuid();
     public string Prompt { get; set; } = string.Empty;
+    public string? Worker { get; set; }
     public JobStatus Status { get; set; } = JobStatus.Pending;
     public string? RemoteUrl { get; set; }
     public string? LocalPath { get; set; }
