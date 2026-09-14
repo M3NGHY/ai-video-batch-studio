@@ -2,8 +2,6 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -20,27 +18,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Expand source
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path .\workspace -Force | Out-Null
-          tar -xf .\source.zip -C .\workspace
-          if ($LASTEXITCODE -ne 0) {
-            throw "tar extraction failed with exit code $LASTEXITCODE"
-          }
-          if (-not (Test-Path .\workspace\AIVideoBatchStudio.sln)) {
-            Get-ChildItem .\workspace -Recurse -Depth 2 | Select-Object FullName
-            throw 'AIVideoBatchStudio.sln not found after extraction.'
-          }
-
       - name: Restore
         shell: pwsh
-        run: dotnet restore .\workspace\AIVideoBatchStudio.sln
+        run: dotnet restore .\src\AIVideoBatchStudio\AIVideoBatchStudio.csproj
 
-      - name: Publish Windows x64 self-contained
+      - name: Publish single Windows EXE
         shell: pwsh
         run: |
-          dotnet publish .\workspace\src\AIVideoBatchStudio\AIVideoBatchStudio.csproj `
+          dotnet publish .\src\AIVideoBatchStudio\AIVideoBatchStudio.csproj `
             -c Release `
             -r win-x64 `
             --self-contained true `
@@ -49,23 +34,19 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -p:PublishTrimmed=false `
             -o .\release
-          if ($LASTEXITCODE -ne 0) {
-            throw "dotnet publish failed with exit code $LASTEXITCODE"
-          }
-          if (-not (Test-Path .\release\AIVideoBatchStudio.exe)) {
-            throw 'AIVideoBatchStudio.exe was not produced.'
-          }
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
+          if (-not (Test-Path .\release\AIVideoBatchStudio.exe)) { throw 'AIVideoBatchStudio.exe was not produced.' }
+
+      - name: Smoke test PE header
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes('.\release\AIVideoBatchStudio.exe')
+          if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Output is not a valid Windows PE executable.' }
+          Write-Host "EXE size: $($bytes.Length) bytes"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: AIVideoBatchStudio-EXE
           path: .\release\AIVideoBatchStudio.exe
-          if-no-files-found: error
-
-      - name: Upload portable folder
-        uses: actions/upload-artifact@v4
-        with:
-          name: AIVideoBatchStudio-Portable
-          path: .\release\
           if-no-files-found: error
