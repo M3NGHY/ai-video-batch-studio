@@ -24,7 +24,7 @@ internal sealed partial class MainForm : Form
         Dock = DockStyle.Top,
         Multiline = true,
         Height = 92,
-        PlaceholderText = "输入视频提示词，每次加入一个任务..."
+        PlaceholderText = "输入视频提示词，然后点击‘加入视频任务’..."
     };
     private readonly TextBox _log = new()
     {
@@ -65,7 +65,7 @@ internal sealed partial class MainForm : Form
 
     public MainForm()
     {
-        Text = "AI 视频批量创作台 - 独立 Profile + 固定代理版";
+        Text = "AI 视频批量创作台 - 账号批量导入 / 独立 Profile / 固定代理";
         Width = 1580;
         Height = 960;
         StartPosition = FormStartPosition.CenterScreen;
@@ -90,8 +90,8 @@ internal sealed partial class MainForm : Form
             WrapContents = false
         };
 
-        var add = new Button { Text = "加入队列", AutoSize = true };
-        var start = new Button { Text = "开始并行批量", AutoSize = true };
+        var importGoogle = new Button { Text = "批量导入谷歌账号", AutoSize = true };
+        var importDolaCookie = new Button { Text = "批量导入 Dola Cookie", AutoSize = true };
         var stop = new Button { Text = "停止", AutoSize = true };
         var retry = new Button { Text = "重试失败", AutoSize = true };
         var preview = new Button { Text = "本地预览", AutoSize = true };
@@ -110,7 +110,7 @@ internal sealed partial class MainForm : Form
         var refreshAll = new Button { Text = "刷新全部Dola", AutoSize = true };
 
         toolbar.Controls.AddRange([
-            add, start, stop, retry, preview, export, folder,
+            importGoogle, importDolaCookie, stop, retry, preview, export, folder,
             windowLabel, _windowCount, applyWindows, addWindow, removeWindow, dola, refreshAll
         ]);
 
@@ -132,9 +132,27 @@ internal sealed partial class MainForm : Form
         var testNetwork = new Button { Text = "测试当前出口IP", AutoSize = true };
         networkBar.Controls.AddRange([proxyLabel, _proxyBox, applyProxy, direct, testNetwork, _networkState]);
 
+        var taskBar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 38,
+            Padding = new Padding(4, 3, 4, 3),
+            WrapContents = false
+        };
+        var addTask = new Button { Text = "加入视频任务", AutoSize = true };
+        var startBatch = new Button { Text = "开始并行生成", AutoSize = true };
+        var taskHint = new Label
+        {
+            Text = "账号登录完成后，在下方输入提示词并加入队列。",
+            AutoSize = true,
+            Margin = new Padding(10, 8, 0, 0)
+        };
+        taskBar.Controls.AddRange([addTask, startBatch, taskHint]);
+
         var taskPanel = new Panel { Dock = DockStyle.Fill };
         taskPanel.Controls.Add(_grid);
         taskPanel.Controls.Add(_prompt);
+        taskPanel.Controls.Add(taskBar);
 
         var bottom = new SplitContainer
         {
@@ -163,22 +181,12 @@ internal sealed partial class MainForm : Form
         Controls.Add(status);
 
         _grid.DataSource = _jobs;
-        add.Click += (_, _) => AddJob();
-        start.Click += async (_, _) => await StartQueueAsync();
-        stop.Click += (_, _) => _runCts?.Cancel();
-        retry.Click += async (_, _) =>
-        {
-            foreach (var job in _jobs.Where(x => x.Status is JobStatus.Failed or JobStatus.Cancelled))
-            {
-                job.Status = JobStatus.Pending;
-                job.Worker = null;
-                job.Error = null;
-                job.RemoteUrl = null;
-                job.LocalPath = null;
-            }
-            _grid.Refresh();
-            await StartQueueAsync();
-        };
+        importGoogle.Click += async (_, _) => await ImportGoogleAccountsAsync();
+        importDolaCookie.Click += async (_, _) => await ImportDolaCookiesAsync();
+        stop.Click += (_, _) => StopCurrentOperation();
+        retry.Click += async (_, _) => await RetryFailedJobsWithFeedbackAsync();
+        addTask.Click += (_, _) => AddJob();
+        startBatch.Click += async (_, _) => await StartQueueAsync();
         preview.Click += (_, _) => PreviewSelected();
         export.Click += (_, _) => ExportSelected();
         folder.Click += (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", VideoDir) { UseShellExecute = true });
@@ -212,7 +220,7 @@ internal sealed partial class MainForm : Form
         {
             await _preview.EnsureCoreWebView2Async();
             await SetSessionCountAsync((int)_windowCount.Value);
-            _status.Text = $"就绪：{_sessions.Count} 个独立 Profile；每个窗口可绑定自己的固定代理。";
+            _status.Text = $"就绪：{_sessions.Count} 个独立 Profile；可批量导入 Google 账号或 Dola Cookie。";
         }
         catch (Exception ex)
         {
