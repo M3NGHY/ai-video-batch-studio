@@ -24,11 +24,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path .\workspace -Force | Out-Null
-          & 7z x .\source.zip -o.\workspace -y
+          tar -xf .\source.zip -C .\workspace
           if ($LASTEXITCODE -ne 0) {
-            throw "7z extraction failed with exit code $LASTEXITCODE"
+            throw "tar extraction failed with exit code $LASTEXITCODE"
           }
           if (-not (Test-Path .\workspace\AIVideoBatchStudio.sln)) {
+            Get-ChildItem .\workspace -Recurse -Depth 2 | Select-Object FullName
             throw 'AIVideoBatchStudio.sln not found after extraction.'
           }
 
