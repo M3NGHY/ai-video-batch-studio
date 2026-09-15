@@ -44,7 +44,7 @@ internal sealed partial class MainForm
 
         var preview = string.Join(Environment.NewLine, accounts.Take(8).Select((x, i) => $"{i + 1}. {MaskEmail(x.Email)}"));
         var confirm = MessageBox.Show(
-            $"已识别 {accounts.Count} 个 Google 账号。\n未识别行：{import.RejectedLines}\n\n{preview}\n\n接下来每个账号会分配到独立 Dola Profile。软件会从 Dola 发起 Google OAuth，并自动填写邮箱；Google 密码/验证码请在弹出的 Google 登录窗口中完成一次。登录成功后该 Profile 会保留登录状态。\n\n是否开始？",
+            $"已识别 {accounts.Count} 个 Google 账号。\n未识别行：{import.RejectedLines}\n\n{preview}\n\n接下来每个账号会分配到独立 Dola Profile。软件会等待 Dola 登录入口并发起 Google OAuth，自动填写邮箱和密码；若 Google 要求验证码或二次验证，请在弹窗中完成。登录成功后该 Profile 会保留登录状态。\n\n是否开始？",
             "确认 Google 账号导入",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Information);
@@ -79,6 +79,7 @@ internal sealed partial class MainForm
                 {
                     var result = await session.OpenGoogleOAuthForAccountAsync(
                         account.Email,
+                        account.Password,
                         _runCts.Token,
                         message => Log($"{session.Name} {message}"));
                     Log($"{session.Name} Google OAuth 结果: {result}");
