@@ -72,8 +72,10 @@ internal sealed class DolaSession : IDisposable
         Directory.CreateDirectory(ProfileDir);
 
         var options = new CoreWebView2EnvironmentOptions();
+        var browserArguments = new List<string> { "--autoplay-policy=no-user-gesture-required" };
         if (!string.IsNullOrWhiteSpace(ProxyUrl))
-            options.AdditionalBrowserArguments = $"--proxy-server={ProxyUrl}";
+            browserArguments.Add($"--proxy-server={ProxyUrl}");
+        options.AdditionalBrowserArguments = string.Join(" ", browserArguments);
 
         _environment = await CoreWebView2Environment.CreateAsync(null, ProfileDir, options);
         await Browser.EnsureCoreWebView2Async(_environment);
@@ -87,6 +89,15 @@ internal sealed class DolaSession : IDisposable
     public void NavigateHome()
     {
         Browser.CoreWebView2?.Navigate(DolaUrl);
+    }
+
+    public async Task<int> RepairVideoPreviewsAsync(bool force = true)
+    {
+        if (Browser.CoreWebView2 is null) return 0;
+        await InstallBridgeAsync();
+        var result = await Browser.CoreWebView2.ExecuteScriptAsync(
+            $"window.AIStudioBridge && window.AIStudioBridge.repair({(force ? "true" : "false")})");
+        return int.TryParse(result, out var changed) ? changed : 0;
     }
 
     public async Task<string> TestNetworkAsync(CancellationToken cancellationToken = default)
@@ -293,6 +304,13 @@ internal sealed class DolaSession : IDisposable
             if (type == "log")
             {
                 if (root.TryGetProperty("message", out var msg)) Log(msg.GetString() ?? string.Empty);
+                return;
+            }
+
+            if (type == "previewRepaired")
+            {
+                var count = root.TryGetProperty("count", out var countEl) && countEl.TryGetInt32(out var value) ? value : 0;
+                Log($"已修复 Dola 页面视频预览：{count} 个播放器。");
                 return;
             }
 

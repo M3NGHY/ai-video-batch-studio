@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace AIVideoBatchStudio;
 
 internal sealed partial class MainForm
@@ -13,7 +15,21 @@ internal sealed partial class MainForm
             return;
         }
 
-        _preview.CoreWebView2?.Navigate(new Uri(job.LocalPath).AbsoluteUri);
+        var relative = Path.GetRelativePath(VideoDir, job.LocalPath).Replace('\\', '/');
+        if (relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            Process.Start(new ProcessStartInfo(job.LocalPath) { UseShellExecute = true });
+            return;
+        }
+
+        var mediaUrl = "https://aivideo.local/" + string.Join("/", relative.Split('/').Select(Uri.EscapeDataString));
+        var html = $$"""
+            <!doctype html><html><head><meta charset="utf-8">
+            <style>html,body{margin:0;height:100%;background:#090d18}body{display:grid;place-items:center}
+            video{width:100%;height:100%;object-fit:contain;background:#000}</style></head>
+            <body><video src="{{System.Net.WebUtility.HtmlEncode(mediaUrl)}}" controls autoplay playsinline preload="metadata"></video></body></html>
+            """;
+        _preview.NavigateToString(html);
     }
 
     private void ExportSelected()

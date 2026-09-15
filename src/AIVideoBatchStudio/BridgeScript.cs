@@ -12,7 +12,8 @@ internal sealed partial class MainForm
             timer: null,
             observer: null,
             fallbackTimer: null,
-            best: null
+            best: null,
+            playable: null
           };
 
           const post = payload => {
@@ -45,6 +46,54 @@ internal sealed partial class MainForm
             post({ type: 'videoCandidate', taskId: state.taskId, url: value.url, source: value.source, score: value.score });
           };
 
+          const canUseForPlayback = url =>
+            /^https:\/\//i.test(url) &&
+            !/h265|hevc|hev1|hvc1/i.test(url) &&
+            !/\/video\/fplay\//i.test(url) &&
+            /(\.mp4(?:\?|$)|video_mp4|rc_gen_video|rc_video|h264|avc1)/i.test(url);
+
+          const wireVideo = video => {
+            if (!video || video.dataset.aiStudioPreviewWired === '1') return;
+            video.dataset.aiStudioPreviewWired = '1';
+            video.controls = true;
+            video.playsInline = true;
+            video.preload = 'metadata';
+            const retry = () => setTimeout(() => repair(false), 80);
+            video.addEventListener('error', retry, true);
+            video.addEventListener('stalled', retry, true);
+            video.addEventListener('emptied', retry, true);
+          };
+
+          const repair = force => {
+            try {
+              const replacement = state.playable?.url || '';
+              let changed = 0;
+              document.querySelectorAll('video').forEach(video => {
+                wireVideo(video);
+                if (!replacement || video.dataset.aiStudioPreviewUrl === replacement) return;
+
+                const current = normalize(video.currentSrc || video.src || '');
+                const noSource = !current || video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE;
+                const failed = !!video.error;
+                const unsupported = /h265|hevc|hev1|hvc1/i.test(current);
+                if (!force && !noSource && !failed && !unsupported) return;
+
+                video.dataset.aiStudioPreviewUrl = replacement;
+                video.src = replacement;
+                video.controls = true;
+                video.playsInline = true;
+                video.preload = 'metadata';
+                video.load();
+                if (force) video.play().catch(() => {});
+                changed++;
+              });
+              if (changed) post({ type: 'previewRepaired', taskId: state.taskId, count: changed, url: replacement });
+              return changed;
+            } catch (_) {
+              return 0;
+            }
+          };
+
           const candidate = (raw, source) => {
             try {
               const url = normalize(raw);
@@ -55,6 +104,10 @@ internal sealed partial class MainForm
 
               const item = { url, source, score: score(url) };
               if (!state.best || item.score > state.best.score) state.best = item;
+              if (canUseForPlayback(url) && (!state.playable || item.score > state.playable.score)) {
+                state.playable = item;
+                setTimeout(() => repair(false), 0);
+              }
 
               if (item.score >= 120) {
                 if (state.fallbackTimer) clearTimeout(state.fallbackTimer);
@@ -81,12 +134,14 @@ internal sealed partial class MainForm
           const scanDom = () => {
             try {
               document.querySelectorAll('video').forEach(v => {
+                wireVideo(v);
                 candidate(v.currentSrc, 'video.currentSrc');
                 candidate(v.src, 'video.src');
                 v.querySelectorAll('source').forEach(s => candidate(s.src, 'source.src'));
               });
               document.querySelectorAll('a[href]').forEach(a => candidate(a.href, 'anchor.href'));
               performance.getEntriesByType('resource').slice(-250).forEach(e => candidate(e.name, 'performance.resource'));
+              repair(false);
             } catch (_) {}
           };
 
@@ -125,10 +180,15 @@ internal sealed partial class MainForm
 
           window.AIStudioBridge = {
             version: '2.0',
+            repair(force = true) {
+              scanDom();
+              return repair(!!force);
+            },
             reset(taskId) {
               state.taskId = taskId;
               state.seen = new Set();
               state.best = null;
+              state.playable = null;
               if (state.fallbackTimer) clearTimeout(state.fallbackTimer);
               state.fallbackTimer = null;
 

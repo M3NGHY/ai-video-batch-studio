@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace AIVideoBatchStudio;
@@ -108,10 +109,11 @@ internal sealed partial class MainForm : Form
         var removeWindow = new Button { Text = "-1窗口", AutoSize = true };
         var dola = new Button { Text = "打开当前Dola", AutoSize = true };
         var refreshAll = new Button { Text = "刷新全部Dola", AutoSize = true };
+        var repairPreview = new Button { Text = "修复页面预览", AutoSize = true };
 
         toolbar.Controls.AddRange([
             importGoogle, importDolaCookie, stop, retry, preview, export, folder,
-            windowLabel, _windowCount, applyWindows, addWindow, removeWindow, dola, refreshAll
+            windowLabel, _windowCount, applyWindows, addWindow, removeWindow, dola, refreshAll, repairPreview
         ]);
 
         var networkBar = new FlowLayoutPanel
@@ -207,6 +209,15 @@ internal sealed partial class MainForm : Form
             foreach (var session in _sessions) session.NavigateHome();
             _status.Text = $"已刷新 {_sessions.Count} 个独立 Dola 页面。";
         };
+        repairPreview.Click += async (_, _) =>
+        {
+            var session = SelectedSession();
+            if (session is null) return;
+            var changed = await session.RepairVideoPreviewsAsync();
+            _status.Text = changed > 0
+                ? $"已修复当前 Dola 页面中的 {changed} 个视频播放器。"
+                : "当前页面未发现需要替换的视频播放器；可先打开生成结果再重试。";
+        };
         applyProxy.Click += async (_, _) => await ApplyCurrentProxyAsync(_proxyBox.Text);
         direct.Click += async (_, _) => await ApplyCurrentProxyAsync(string.Empty);
         testNetwork.Click += async (_, _) => await TestCurrentNetworkAsync();
@@ -219,6 +230,11 @@ internal sealed partial class MainForm : Form
         try
         {
             await _preview.EnsureCoreWebView2Async();
+            _preview.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "aivideo.local",
+                VideoDir,
+                CoreWebView2HostResourceAccessKind.Allow);
+            _preview.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             await SetSessionCountAsync((int)_windowCount.Value);
             _status.Text = $"就绪：{_sessions.Count} 个独立 Profile；可批量导入 Google 账号或 Dola Cookie。";
         }
