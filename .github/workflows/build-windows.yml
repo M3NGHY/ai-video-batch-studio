@@ -51,14 +51,21 @@ jobs:
       - name: Launch smoke test
         shell: pwsh
         run: |
+          $errorLog = Join-Path $env:LOCALAPPDATA 'AIVideoBatchStudio\startup-error.log'
+          if (Test-Path $errorLog) { Remove-Item $errorLog -Force }
           $proc = Start-Process -FilePath .\release\MengTianDolaStudio.exe -PassThru
           Start-Sleep -Seconds 8
           $proc.Refresh()
+          if (Test-Path $errorLog) {
+            $startupError = Get-Content $errorLog -Raw
+            try { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } } catch {}
+            throw "Application wrote startup-error.log during smoke test: $startupError"
+          }
           if ($proc.HasExited) {
             throw "Application exited during startup. ExitCode=$($proc.ExitCode)"
           }
           Stop-Process -Id $proc.Id -Force
-          Write-Host "Application stayed alive for the startup smoke test."
+          Write-Host "Application stayed alive without startup-error.log."
 
       - name: Publish compatibility folder
         shell: pwsh
