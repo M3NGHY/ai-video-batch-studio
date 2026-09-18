@@ -1,8 +1,10 @@
-name: Build Windows EXE
+name: Build 梦天Dola工作台 Windows EXE
 
 on:
   workflow_dispatch:
   push:
+    branches: [ main, "feature/mengtian-dola-v1.01-ui" ]
+  pull_request:
     branches: [ main ]
 
 permissions:
@@ -37,18 +39,18 @@ jobs:
             -p:PublishTrimmed=false `
             -o .\release
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
-          if (-not (Test-Path .\release\AIVideoBatchStudio.exe)) { throw 'AIVideoBatchStudio.exe was not produced.' }
+          if (-not (Test-Path .\release\MengTianDolaStudio.exe)) { throw 'MengTianDolaStudio.exe was not produced.' }
 
       - name: Smoke test PE header
         shell: pwsh
         run: |
-          $bytes = [System.IO.File]::ReadAllBytes('.\release\AIVideoBatchStudio.exe')
+          $bytes = [System.IO.File]::ReadAllBytes('.\release\MengTianDolaStudio.exe')
           if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Output is not a valid Windows PE executable.' }
           Write-Host "EXE size: $($bytes.Length) bytes"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: AIVideoBatchStudio-EXE
-          path: .\release\AIVideoBatchStudio.exe
+          name: MengTianDolaStudio-v1.01-EXE
+          path: .\release\MengTianDolaStudio.exe
           if-no-files-found: error
