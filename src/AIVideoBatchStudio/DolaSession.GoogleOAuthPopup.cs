@@ -18,7 +18,8 @@ internal static class DolaSessionGoogleOAuthPopup
         var main = session.Browser.CoreWebView2
             ?? throw new InvalidOperationException($"{session.Name} 尚未初始化。");
 
-        await NavigateAndWaitAsync(main, DolaUrl, cancellationToken);
+        progress?.Invoke("正在清理该 Profile 旧的 Dola 登录状态...");
+        await PrepareDolaForImportedAccountAsync(main, cancellationToken);
 
         using var authForm = new Form
         {
@@ -37,11 +38,23 @@ internal static class DolaSessionGoogleOAuthPopup
         var authCore = authView.CoreWebView2;
         var oauthOpened = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var closed = false;
+        var authReturnedToDola = false;
         authForm.FormClosed += (_, _) => closed = true;
+
+        void AuthNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (IsDolaUrl(e.Uri))
+                authReturnedToDola = true;
+        }
 
         void NewWindowHandler(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(e.Uri) || !IsGoogleOrDola(e.Uri)) return;
+            // Dola/Google OAuth popups may first open about:blank or an intermediate
+            // authentication host before reaching accounts.google.com. The old code
+            // ignored those URLs, so the batch importer waited forever for a popup
+            // that WebView2 had opened elsewhere. While an import is active, route
+            // the popup into the dedicated auth WebView regardless of its first URL.
+            if (string.IsNullOrWhiteSpace(e.Uri)) return;
             e.NewWindow = authCore;
             oauthOpened.TrySetResult(true);
             authForm.Activate();
@@ -58,6 +71,7 @@ internal static class DolaSessionGoogleOAuthPopup
 
         main.NewWindowRequested += NewWindowHandler;
         main.NavigationStarting += MainNavigationStarting;
+        authCore.NavigationStarting += AuthNavigationStarting;
 
         try
         {
@@ -85,7 +99,17 @@ internal static class DolaSessionGoogleOAuthPopup
             while (DateTime.UtcNow < deadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (closed) return "Google 登录窗口已关闭。";
+                if (closed)
+                {
+                    if (authReturnedToDola)
+                    {
+                        progress?.Invoke("Google OAuth 已完成并关闭登录窗口，正在刷新 Dola...");
+                        await NavigateAndWaitAsync(main, DolaUrl, cancellationToken);
+                        return "DOLA_LOGIN_OK";
+                    }
+
+                    return "FAILED: Google 登录窗口已关闭。";
+                }
 
                 var source = authCore.Source ?? string.Empty;
                 if (IsDolaUrl(source))
@@ -98,7 +122,11 @@ internal static class DolaSessionGoogleOAuthPopup
 
                 if (IsGoogleUrl(source))
                 {
-                    var result = await authCore.ExecuteScriptAsync($$"""
+                    var blocked = await DetectGoogleBlockStateAsync(authCore);
+                    if (!string.IsNullOrWhiteSpace(blocked))
+                        return blocked;
+
+                    var result = await authCore.ExecuteScriptAsync($"""
                         (() => {
                           const email = {{emailJson}};
                           const password = {{passwordJson}};
@@ -178,14 +206,81 @@ internal static class DolaSessionGoogleOAuthPopup
                 await Task.Delay(500, cancellationToken);
             }
 
-            return "等待 Google OAuth 回调超时。";
+            return "MANUAL: 等待 Google OAuth 回调超时。";
         }
         finally
         {
             main.NewWindowRequested -= NewWindowHandler;
             main.NavigationStarting -= MainNavigationStarting;
+            authCore.NavigationStarting -= AuthNavigationStarting;
             try { if (!authForm.IsDisposed) authForm.Close(); } catch { }
         }
+    }
+
+    private static async Task PrepareDolaForImportedAccountAsync(
+        CoreWebView2 core,
+        CancellationToken cancellationToken)
+    {
+        var manager = core.CookieManager;
+        foreach (var url in new[] { "https://www.dola.com/", "https://dola.com/" })
+        {
+            var cookies = await manager.GetCookiesAsync(url);
+            foreach (var cookie in cookies)
+                manager.DeleteCookie(cookie);
+        }
+
+        await NavigateAndWaitAsync(core, DolaUrl, cancellationToken);
+
+        try
+        {
+            await core.ExecuteScriptAsync("""
+                (() => {
+                  try { localStorage.clear(); } catch (_) {}
+                  try { sessionStorage.clear(); } catch (_) {}
+                  return true;
+                })();
+                """);
+        }
+        catch
+        {
+            // Cookies are the primary Dola session state. Storage cleanup is best-effort.
+        }
+
+        await NavigateAndWaitAsync(core, DolaUrl, cancellationToken);
+        await Task.Delay(500, cancellationToken);
+    }
+
+    private static async Task<string?> DetectGoogleBlockStateAsync(CoreWebView2 core)
+    {
+        var source = core.Source ?? string.Empty;
+        if (source.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+            source.Contains("speedbump", StringComparison.OrdinalIgnoreCase))
+            return "MANUAL: Google 要求验证码或二次验证，请稍后在该账号 Profile 中手动完成。";
+
+        var result = await core.ExecuteScriptAsync("""
+            (() => {
+              const text = (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 20000);
+              if (/2-Step Verification|两步验证|两步驗證|Verify it.?s you|Confirm it.?s you|验证您的身份|驗證您的身分|验证码|security key|verification code/i.test(text))
+                return 'CHALLENGE';
+              if (/Wrong password|Incorrect password|密码错误|密码不正确|密碼錯誤|密碼不正確/i.test(text))
+                return 'BAD_PASSWORD';
+              if (/Couldn.?t find your Google Account|找不到您的 Google|找不到您的 Google 帳號|找不到您的 Google 账号|Enter a valid email or phone/i.test(text))
+                return 'ACCOUNT_NOT_FOUND';
+              if (/browser or app may not be secure|此浏览器或应用可能不安全|此瀏覽器或應用程式可能不安全/i.test(text))
+                return 'UNSAFE_BROWSER';
+              return '';
+            })();
+            """);
+
+        if (result.Contains("CHALLENGE", StringComparison.OrdinalIgnoreCase))
+            return "MANUAL: Google 要求验证码或二次验证，请稍后在该账号 Profile 中手动完成。";
+        if (result.Contains("BAD_PASSWORD", StringComparison.OrdinalIgnoreCase))
+            return "FAILED: Google 提示账号密码不正确。";
+        if (result.Contains("ACCOUNT_NOT_FOUND", StringComparison.OrdinalIgnoreCase))
+            return "FAILED: Google 未找到该账号。";
+        if (result.Contains("UNSAFE_BROWSER", StringComparison.OrdinalIgnoreCase))
+            return "FAILED: Google 拒绝当前嵌入式浏览器登录，请在该 Profile 中手动登录一次。";
+        return null;
     }
 
     private static async Task<bool> LaunchGoogleFromDolaAsync(CoreWebView2 core, CancellationToken cancellationToken)
