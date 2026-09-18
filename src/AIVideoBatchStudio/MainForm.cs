@@ -337,7 +337,6 @@ internal sealed partial class MainForm : Form
             FixedPanel = FixedPanel.Panel2,
             Panel2MinSize = 300,
             SplitterWidth = 1,
-            SplitterDistance = 1260,
             BackColor = Border
         };
         outer.Panel1.BackColor = Bg;
@@ -350,7 +349,6 @@ internal sealed partial class MainForm : Form
             FixedPanel = FixedPanel.Panel2,
             Panel2MinSize = 165,
             SplitterWidth = 1,
-            SplitterDistance = 640,
             BackColor = Border
         };
         left.Panel1.BackColor = Bg;
@@ -361,10 +359,18 @@ internal sealed partial class MainForm : Form
         outer.Panel1.Controls.Add(left);
         outer.Panel2.Controls.Add(BuildAccountPanel());
 
-        outer.Resize += (_, _) =>
+        void LayoutWorkspaceSplitters()
         {
-            if (outer.Width > 330)
-                outer.SplitterDistance = Math.Max(900, outer.Width - 315);
+            SetSplitterDistanceSafe(outer, Math.Max(900, outer.ClientSize.Width - 315));
+            SetSplitterDistanceSafe(left, Math.Max(280, left.ClientSize.Height - 195));
+        }
+
+        outer.Resize += (_, _) => LayoutWorkspaceSplitters();
+        left.Resize += (_, _) => LayoutWorkspaceSplitters();
+        outer.HandleCreated += (_, _) =>
+        {
+            if (!IsHandleCreated) return;
+            BeginInvoke(LayoutWorkspaceSplitters);
         };
 
         return outer;
@@ -554,7 +560,7 @@ internal sealed partial class MainForm : Form
         {
             var expanded = hostSplit.Height - hostSplit.SplitterDistance > 300;
             var desiredBottom = expanded ? 195 : Math.Min(390, Math.Max(260, hostSplit.Height / 2));
-            hostSplit.SplitterDistance = Math.Max(280, hostSplit.Height - desiredBottom);
+            SetSplitterDistanceSafe(hostSplit, Math.Max(280, hostSplit.ClientSize.Height - desiredBottom));
             expand.Text = expanded ? "展开" : "收起";
         };
 
@@ -586,11 +592,12 @@ internal sealed partial class MainForm : Form
             FixedPanel = FixedPanel.Panel2,
             Panel2MinSize = 250,
             SplitterWidth = 1,
-            SplitterDistance = 820,
             BackColor = Border
         };
         split.Panel1.BackColor = Bg;
         split.Panel2.BackColor = Color.Black;
+        split.Resize += (_, _) =>
+            SetSplitterDistanceSafe(split, Math.Max(480, split.ClientSize.Width - 270));
 
         var taskLeft = new TableLayoutPanel
         {
@@ -1467,6 +1474,22 @@ internal sealed partial class MainForm : Form
         if (job.Status == JobStatus.Completed)
             RefreshWorkLibrary();
         UpdateStatus();
+    }
+
+    private static void SetSplitterDistanceSafe(SplitContainer split, int desired)
+    {
+        var span = split.Orientation == Orientation.Vertical
+            ? split.ClientSize.Width
+            : split.ClientSize.Height;
+        var minimum = Math.Max(0, split.Panel1MinSize);
+        var maximum = span - split.Panel2MinSize - split.SplitterWidth;
+
+        if (maximum < minimum)
+            return;
+
+        var distance = Math.Clamp(desired, minimum, maximum);
+        if (split.SplitterDistance != distance)
+            split.SplitterDistance = distance;
     }
 
     private void ToggleMaximize()
