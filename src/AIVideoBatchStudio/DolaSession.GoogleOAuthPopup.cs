@@ -126,7 +126,7 @@ internal static class DolaSessionGoogleOAuthPopup
                     if (!string.IsNullOrWhiteSpace(blocked))
                         return blocked;
 
-                    var result = await authCore.ExecuteScriptAsync($"""
+                    var result = await authCore.ExecuteScriptAsync($$"""
                         (() => {
                           const email = {{emailJson}};
                           const password = {{passwordJson}};
