@@ -102,13 +102,13 @@ internal sealed partial class MainForm
                         success++;
                         UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 已登录");
                     }
-                    else if (result.Contains("验证", StringComparison.OrdinalIgnoreCase) ||
-                             result.Contains("密码", StringComparison.OrdinalIgnoreCase) ||
+                    else if (result.StartsWith("MANUAL:", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("验证", StringComparison.OrdinalIgnoreCase) ||
                              result.Contains("手动", StringComparison.OrdinalIgnoreCase) ||
                              result.Contains("超时", StringComparison.OrdinalIgnoreCase))
                     {
                         manual++;
-                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待完成");
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待人工");
                     }
                     else
                     {
