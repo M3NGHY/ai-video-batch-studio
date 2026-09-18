@@ -1,0 +1,66 @@
+name: Export 梦天Dola工作台 v1.01 Source
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "feature/mengtian-dola-v1.01-ui" ]
+    paths:
+      - ".github/workflows/export-v1.01-source.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact EXE source commit
+        uses: actions/checkout@v4
+        with:
+          ref: a19fff075485b4dd597830383a15a59eba93c30c
+
+      - name: Build source text bundle
+        shell: pwsh
+        run: |
+          $sourceDir = ".\src\AIVideoBatchStudio"
+          $outDir = ".\source-export"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $info = @"
+          梦天Dola工作台 v1.01
+          Source commit: a19fff075485b4dd597830383a15a59eba93c30c
+          This source tree corresponds to the startup-fixed v1.01 EXE build.
+          "@
+          Set-Content -Path "$outDir\SOURCE_INFO.txt" -Value $info -Encoding UTF8
+
+          $bundle = "$outDir\MengTianDolaStudio-v1.01-source.txt"
+          Set-Content -Path $bundle -Value $info -Encoding UTF8
+
+          $files = Get-ChildItem $sourceDir -File | Where-Object {
+            $_.Extension -in ".cs", ".csproj"
+          } | Sort-Object Name
+
+          foreach ($file in $files) {
+            Add-Content -Path $bundle -Value ""
+            Add-Content -Path $bundle -Value ("=" * 100)
+            Add-Content -Path $bundle -Value ("FILE: " + $file.Name)
+            Add-Content -Path $bundle -Value ("=" * 100)
+            Add-Content -Path $bundle -Value ""
+            Get-Content -Path $file.FullName -Raw | Add-Content -Path $bundle
+          }
+
+          Copy-Item -Path $sourceDir -Destination "$outDir\AIVideoBatchStudio" -Recurse -Force
+
+      - name: Upload source text
+        uses: actions/upload-artifact@v4
+        with:
+          name: MengTianDolaStudio-v1.01-SourceText
+          path: .\source-export\MengTianDolaStudio-v1.01-source.txt
+          if-no-files-found: error
+
+      - name: Upload full source project
+        uses: actions/upload-artifact@v4
+        with:
+          name: MengTianDolaStudio-v1.01-SourceProject
+          path: .\source-export\**
+          if-no-files-found: error
