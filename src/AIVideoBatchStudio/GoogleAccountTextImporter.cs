@@ -85,7 +85,7 @@ internal static partial class GoogleAccountTextImporter
         }
 
         // CSV including quoted fields. Only email + password are required.
-        if (line.Contains(',', StringComparison.Ordinal))
+        if (line.Contains(','))
         {
             var fields = SplitCsv(line);
             if (fields.Count >= 2 &&
