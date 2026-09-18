@@ -14,14 +14,23 @@ internal sealed partial class MainForm
         {
             Title = "批量导入 Google 账号",
             Filter = "账号文件 (*.txt;*.csv)|*.txt;*.csv|所有文件 (*.*)|*.*",
-            Multiselect = false
+            Multiselect = true
         };
         if (dialog.ShowDialog() != DialogResult.OK) return;
 
-        GoogleAccountImportResult import;
+        var parsedAccounts = new List<GoogleAccount>();
+        var totalNonEmptyLines = 0;
+        var rejectedLines = 0;
         try
         {
-            import = GoogleAccountTextImporter.Parse(dialog.FileName, (int)_windowCount.Maximum);
+            foreach (var file in dialog.FileNames)
+            {
+                var import = GoogleAccountTextImporter.Parse(file, (int)_windowCount.Maximum);
+                totalNonEmptyLines += import.TotalNonEmptyLines;
+                rejectedLines += import.RejectedLines;
+                parsedAccounts.AddRange(import.Accounts);
+                Log($"账号文件 {Path.GetFileName(file)}：非空行 {import.TotalNonEmptyLines}，识别 {import.Accounts.Count}，未识别 {import.RejectedLines}。");
+            }
         }
         catch (Exception ex)
         {
@@ -29,13 +38,17 @@ internal sealed partial class MainForm
             return;
         }
 
-        var accounts = import.Accounts.ToList();
-        Log($"Google TXT 解析：非空行 {import.TotalNonEmptyLines}，识别账号 {accounts.Count}，未识别 {import.RejectedLines}。 ");
+        var accounts = parsedAccounts
+            .GroupBy(x => x.Email, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.First())
+            .Take((int)_windowCount.Maximum)
+            .ToList();
+        Log($"Google 账号批量解析：文件 {dialog.FileNames.Length} 个，非空行 {totalNonEmptyLines}，有效账号 {accounts.Count}，未识别 {rejectedLines}。 ");
 
         if (accounts.Count == 0)
         {
             MessageBox.Show(
-                "没有读取到有效账号。\n\n当前优先支持格式：\nxxxx@gmail.com----password\n\n请确认邮箱和密码在同一行，中间是 4 个或更多横线。",
+                "没有读取到有效账号。\n\n支持格式示例：\nxxxx@gmail.com----password\nxxxx@gmail.com----password----辅助邮箱----2FA\nxxxx@gmail.com|password\nxxxx@gmail.com,password\n\n每行一个账号。",
                 "未找到账号",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -44,7 +57,7 @@ internal sealed partial class MainForm
 
         var preview = string.Join(Environment.NewLine, accounts.Take(8).Select((x, i) => $"{i + 1}. {MaskEmail(x.Email)}"));
         var confirm = MessageBox.Show(
-            $"已识别 {accounts.Count} 个 Google 账号。\n未识别行：{import.RejectedLines}\n\n{preview}\n\n接下来每个账号会分配到独立 Dola Profile。软件会等待 Dola 登录入口并发起 Google OAuth，自动填写邮箱和密码；若 Google 要求验证码或二次验证，请在弹窗中完成。登录成功后该 Profile 会保留登录状态。\n\n是否开始？",
+            $"已从 {dialog.FileNames.Length} 个文件识别 {accounts.Count} 个 Google 账号。\n未识别行：{rejectedLines}\n\n{preview}\n\n接下来每个账号会分配到独立 Dola Profile。导入前会清理该 Profile 旧的 Dola 登录状态，再从 Dola 发起 Google OAuth 并自动填写邮箱和密码；若 Google 要求验证码或二次验证，该账号会标记为待人工处理，不会卡住后面的账号。\n\n是否开始？",
             "确认 Google 账号导入",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Information);
@@ -89,13 +102,13 @@ internal sealed partial class MainForm
                         success++;
                         UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 已登录");
                     }
-                    else if (result.Contains("验证", StringComparison.OrdinalIgnoreCase) ||
-                             result.Contains("密码", StringComparison.OrdinalIgnoreCase) ||
+                    else if (result.StartsWith("MANUAL:", StringComparison.OrdinalIgnoreCase) ||
+                             result.Contains("验证", StringComparison.OrdinalIgnoreCase) ||
                              result.Contains("手动", StringComparison.OrdinalIgnoreCase) ||
                              result.Contains("超时", StringComparison.OrdinalIgnoreCase))
                     {
                         manual++;
-                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待完成");
+                        UpdateSessionCaption(session, $"{MaskEmail(account.Email)} 待人工");
                     }
                     else
                     {
@@ -164,7 +177,7 @@ internal sealed partial class MainForm
             }
         }
 
-        bundles = bundles.Take(10).ToList();
+        bundles = bundles.Take((int)_windowCount.Maximum).ToList();
         if (bundles.Count == 0)
         {
             MessageBox.Show("没有读取到有效 Dola Cookie。支持 Cookie-Editor JSON、Netscape Cookie、以及原始 Cookie Header。", "未找到 Cookie");
@@ -271,6 +284,9 @@ internal sealed partial class MainForm
         var index = _sessions.IndexOf(session);
         if (index < 0 || index >= _browserTabs.TabPages.Count) return;
         _browserTabs.TabPages[index].Text = $"{session.Name} [{label}]";
+        RefreshAccountCards();
+        if (index == _browserTabs.SelectedIndex)
+            _currentAccountLabel.Text = $"当前账号：{GetSessionDisplayName(index)}";
     }
 
     private static string MaskEmail(string email)
