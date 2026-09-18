@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AIVideoBatchStudio;
@@ -12,7 +13,10 @@ internal static partial class GoogleAccountTextImporter
     [GeneratedRegex(@"\s*-{4,}\s*", RegexOptions.CultureInvariant)]
     private static partial Regex DashSeparatorRegex();
 
-    public static GoogleAccountImportResult Parse(string path, int maxAccounts = 10)
+    [GeneratedRegex(@"^(?<email>[^\s,;|:\t]+@[^\s,;|:\t]+)\s+(?<password>\S+)(?:\s+.*)?$", RegexOptions.CultureInvariant)]
+    private static partial Regex WhitespaceAccountRegex();
+
+    public static GoogleAccountImportResult Parse(string path, int maxAccounts = 20)
     {
         var text = File.ReadAllText(path);
         text = text.Replace("\uFEFF", string.Empty)
@@ -37,6 +41,9 @@ internal static partial class GoogleAccountTextImporter
                 continue;
             }
 
+            if (accounts.Any(x => x.Email.Equals(account.Email, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
             accounts.Add(account);
             if (accounts.Count >= maxAccounts) break;
         }
@@ -48,23 +55,52 @@ internal static partial class GoogleAccountTextImporter
     {
         account = new GoogleAccount(string.Empty, string.Empty);
 
-        // User's primary format: email@gmail.com----password
-        var match = DashSeparatorRegex().Match(line);
-        if (match.Success)
+        // Most purchased/exported account lists use:
+        // email----password
+        // email----password----recoveryEmail----2FA...
+        // Only the SECOND field is the password. The old implementation treated
+        // every field after the first separator as part of the password.
+        var dashMatches = DashSeparatorRegex().Matches(line);
+        if (dashMatches.Count > 0)
         {
-            var email = Clean(line[..match.Index]);
-            var password = Clean(line[(match.Index + match.Length)..]);
+            var first = dashMatches[0];
+            var email = Clean(line[..first.Index]);
+            var passwordStart = first.Index + first.Length;
+            var passwordEnd = dashMatches.Count > 1 ? dashMatches[1].Index : line.Length;
+            var password = Clean(line[passwordStart..passwordEnd]);
             return TryCreate(email, password, out account);
         }
 
-        // Compatibility fallbacks for older account lists.
-        foreach (var separator in new[] { "\t", "|", "," })
+        // TSV / pipe / semicolon / colon account lists. Extra columns are ignored.
+        foreach (var separator in new[] { "\t", "|", ";", ":" })
         {
-            var index = line.IndexOf(separator, StringComparison.Ordinal);
-            if (index <= 0) continue;
-            var email = Clean(line[..index]);
-            var password = Clean(line[(index + separator.Length)..]);
+            var first = line.IndexOf(separator, StringComparison.Ordinal);
+            if (first <= 0) continue;
+
+            var email = Clean(line[..first]);
+            var rest = line[(first + separator.Length)..];
+            var next = rest.IndexOf(separator, StringComparison.Ordinal);
+            var password = Clean(next >= 0 ? rest[..next] : rest);
             if (TryCreate(email, password, out account)) return true;
+        }
+
+        // CSV including quoted fields. Only email + password are required.
+        if (line.Contains(',', StringComparison.Ordinal))
+        {
+            var fields = SplitCsv(line);
+            if (fields.Count >= 2 &&
+                TryCreate(Clean(fields[0]), Clean(fields[1]), out account))
+                return true;
+        }
+
+        // Last-resort compatibility: "email password [extra...]".
+        var whitespace = WhitespaceAccountRegex().Match(line);
+        if (whitespace.Success)
+        {
+            return TryCreate(
+                Clean(whitespace.Groups["email"].Value),
+                Clean(whitespace.Groups["password"].Value),
+                out account);
         }
 
         return false;
@@ -77,10 +113,47 @@ internal static partial class GoogleAccountTextImporter
         if (!email.Contains('@') || email.Contains(' ')) return false;
         if (email.Equals("谷歌账号", StringComparison.OrdinalIgnoreCase) ||
             email.Equals("google account", StringComparison.OrdinalIgnoreCase) ||
-            email.Equals("email", StringComparison.OrdinalIgnoreCase)) return false;
+            email.Equals("email", StringComparison.OrdinalIgnoreCase) ||
+            email.Equals("账号", StringComparison.OrdinalIgnoreCase)) return false;
 
         account = new GoogleAccount(email, password);
         return true;
+    }
+
+    private static List<string> SplitCsv(string line)
+    {
+        var result = new List<string>();
+        var current = new StringBuilder();
+        var quoted = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (ch == '"')
+            {
+                if (quoted && i + 1 < line.Length && line[i + 1] == '"')
+                {
+                    current.Append('"');
+                    i++;
+                }
+                else
+                {
+                    quoted = !quoted;
+                }
+            }
+            else if (ch == ',' && !quoted)
+            {
+                result.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(ch);
+            }
+        }
+
+        result.Add(current.ToString());
+        return result;
     }
 
     private static string Clean(string value)
