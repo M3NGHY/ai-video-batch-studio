@@ -48,9 +48,50 @@ jobs:
           if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Output is not a valid Windows PE executable.' }
           Write-Host "EXE size: $($bytes.Length) bytes"
 
-      - name: Upload EXE
+      - name: Launch smoke test
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath .\release\MengTianDolaStudio.exe -PassThru
+          Start-Sleep -Seconds 8
+          $proc.Refresh()
+          if ($proc.HasExited) {
+            throw "Application exited during startup. ExitCode=$($proc.ExitCode)"
+          }
+          Stop-Process -Id $proc.Id -Force
+          Write-Host "Application stayed alive for the startup smoke test."
+
+      - name: Publish compatibility folder
+        shell: pwsh
+        run: |
+          dotnet publish .\src\AIVideoBatchStudio\AIVideoBatchStudio.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=false `
+            -p:PublishTrimmed=false `
+            -o .\release-portable
+          if ($LASTEXITCODE -ne 0) { throw "portable publish failed: $LASTEXITCODE" }
+          @"
+          梦天Dola工作台 v1.01 - 兼容版
+
+          1. 请先完整解压整个文件夹，不要直接在压缩包内运行。
+          2. 双击 MengTianDolaStudio.exe。
+          3. 如果 Windows SmartScreen 拦截：点击“更多信息” -> “仍要运行”。
+          4. 如果程序提示缺少 WebView2，请安装 Microsoft Edge WebView2 Runtime。
+          5. 如果仍然启动失败，请把下面文件发回：
+             %LOCALAPPDATA%\AIVideoBatchStudio\startup-error.log
+          "@ | Set-Content -Path .\release-portable\README-START.txt -Encoding UTF8
+
+      - name: Upload single EXE
         uses: actions/upload-artifact@v4
         with:
           name: MengTianDolaStudio-v1.01-EXE
           path: .\release\MengTianDolaStudio.exe
+          if-no-files-found: error
+
+      - name: Upload compatibility package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MengTianDolaStudio-v1.01-Portable
+          path: .\release-portable\**
           if-no-files-found: error
