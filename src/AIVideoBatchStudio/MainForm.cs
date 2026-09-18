@@ -335,7 +335,6 @@ internal sealed partial class MainForm : Form
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
             FixedPanel = FixedPanel.Panel2,
-            Panel2MinSize = 300,
             SplitterWidth = 1,
             BackColor = Border
         };
@@ -347,7 +346,6 @@ internal sealed partial class MainForm : Form
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
             FixedPanel = FixedPanel.Panel2,
-            Panel2MinSize = 165,
             SplitterWidth = 1,
             BackColor = Border
         };
@@ -590,7 +588,6 @@ internal sealed partial class MainForm : Form
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
             FixedPanel = FixedPanel.Panel2,
-            Panel2MinSize = 250,
             SplitterWidth = 1,
             BackColor = Border
         };
